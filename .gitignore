@@ -38,3 +38,6 @@ logs/
 # IDE
 .vscode/
 .idea/
+
+# Generated sample datasets may contain secret-like synthetic values
+data/sample/*.jsonl

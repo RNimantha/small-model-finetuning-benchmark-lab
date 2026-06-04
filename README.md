@@ -52,3 +52,29 @@ notebooks/      Experiment notebooks
 reports/        Benchmark reports
 src/            Training, inference, and evaluation code
 tests/          Basic tests
+
+
+# Data Documentation
+
+## Phase 1 Dataset Candidate
+
+Dataset: `paraloq/json_data_extraction`
+
+Purpose:
+This dataset is used for structured JSON extraction from unstructured text.
+
+Why selected:
+- Suitable for supervised fine-tuning
+- Easy to evaluate using JSON validity and field-level accuracy
+- Practical business use case
+- Useful for comparing small fine-tuned models against larger baselines
+
+Planned evaluation:
+- Valid JSON rate
+- Schema-following accuracy
+- Field-level exact match
+- Full-output exact match
+- Latency and inference cost
+
+Notes:
+Before production use, dataset license, provenance, and redistribution terms must be reviewed carefully.
