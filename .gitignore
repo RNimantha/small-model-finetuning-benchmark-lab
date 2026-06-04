@@ -41,3 +41,8 @@ logs/
 
 # Generated sample datasets may contain secret-like synthetic values
 data/sample/*.jsonl
+
+outputs/
+checkpoints/
+models/
+data/sample/*.jsonl
