@@ -1,0 +1,31 @@
+project:
+  name: small-model-finetuning-benchmark-lab
+  task: json_extraction
+
+model:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  output_dir: outputs/qwen-json-extraction-qlora
+
+dataset:
+  train_file: data/sample/train.jsonl
+  validation_file: data/sample/validation.jsonl
+  text_field: text
+  max_length: 512
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - v_proj
+
+training:
+  epochs: 3
+  learning_rate: 0.0002
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  logging_steps: 1
+  save_steps: 50
+  fp16: true
+  seed: 42
