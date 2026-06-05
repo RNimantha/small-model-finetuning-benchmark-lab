@@ -78,3 +78,4 @@ Planned evaluation:
 
 Notes:
 Before production use, dataset license, provenance, and redistribution terms must be reviewed carefully.
+uv run python src/llm/prepare_json_dataset.py

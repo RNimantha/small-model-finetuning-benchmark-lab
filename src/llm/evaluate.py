@@ -40,17 +40,39 @@ def load_jsonl(path: str, limit: int | None = None) -> list[dict]:
         for line in file:
             rows.append(json.loads(line))
 
-            if limit and len(rows) >= limit:
+            if limit is not None and len(rows) >= limit:
                 break
 
     return rows
 
 
+def extract_json_candidate(text: str) -> str:
+    """
+    Some models generate extra text before/after JSON.
+    This function tries to extract the JSON-looking part.
+    """
+    text = text.strip()
+
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+
+    if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
+        return text
+
+    return text[first_brace : last_brace + 1]
+
+
 def try_parse_json(text: str) -> Any | None:
+    candidate = extract_json_candidate(text)
+
     try:
-        return json.loads(text)
+        return json.loads(candidate)
     except json.JSONDecodeError:
         return None
+
+
+def normalize_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
 
 
 def flatten_keys(obj: Any, prefix: str = "") -> set[str]:
@@ -100,6 +122,7 @@ def load_model_and_tokenizer(config: dict, mode: str):
                 f"Adapter not found at {adapter_path}. Train the model first."
             )
 
+        print(f"Loading adapter from: {adapter_path}")
         model = PeftModel.from_pretrained(model, str(adapter_path))
 
     model.eval()
@@ -109,6 +132,8 @@ def load_model_and_tokenizer(config: dict, mode: str):
 def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 512) -> str:
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
+    start_time = time.time()
+
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -117,15 +142,19 @@ def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 512) 
             pad_token_id=tokenizer.eos_token_id,
         )
 
+    latency = time.time() - start_time
+
     decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
     if "### Response:" in decoded:
-        return decoded.split("### Response:", 1)[1].strip()
+        response = decoded.split("### Response:", 1)[1].strip()
+    else:
+        response = decoded.strip()
 
-    return decoded.strip()
+    return response, latency
 
 
-def evaluate(config_path: str, mode: str, limit: int) -> dict:
+def evaluate(config_path: str, mode: str, limit: int | None) -> dict:
     config = load_config(config_path)
     validation_file = config["dataset"]["validation_file"]
 
@@ -136,6 +165,7 @@ def evaluate(config_path: str, mode: str, limit: int) -> dict:
     exact_match_count = 0
     key_scores = []
     latencies = []
+    examples = []
 
     for idx, row in enumerate(rows):
         prompt = build_prompt(
@@ -146,38 +176,75 @@ def evaluate(config_path: str, mode: str, limit: int) -> dict:
         target_raw = row["target_json"]
         target_json = try_parse_json(target_raw)
 
-        start_time = time.time()
-        prediction_raw = generate_response(model, tokenizer, prompt)
-        latency = time.time() - start_time
-        latencies.append(latency)
-
+        prediction_raw, latency = generate_response(model, tokenizer, prompt)
         prediction_json = try_parse_json(prediction_raw)
 
-        if prediction_json is not None:
+        is_valid_json = prediction_json is not None
+
+        is_exact_match = False
+        if prediction_json is not None and target_json is not None:
+            is_exact_match = normalize_json(prediction_json) == normalize_json(target_json)
+
+        if is_valid_json:
             valid_json_count += 1
 
-        if prediction_json == target_json:
+        if is_exact_match:
             exact_match_count += 1
 
         if prediction_json is not None and target_json is not None:
-            key_scores.append(key_overlap_score(prediction_json, target_json))
+            key_score = key_overlap_score(prediction_json, target_json)
         else:
-            key_scores.append(0.0)
+            key_score = 0.0
 
-        print(f"Evaluated {idx + 1}/{len(rows)}")
+        key_scores.append(key_score)
+        latencies.append(latency)
+
+        examples.append(
+            {
+                "index": idx,
+                "topic": row.get("topic"),
+                "medium": row.get("medium"),
+                "valid_json": is_valid_json,
+                "exact_match": is_exact_match,
+                "key_overlap": key_score,
+                "latency_seconds": latency,
+                "prediction_preview": prediction_raw[:1000],
+                "target_preview": target_raw[:1000],
+            }
+        )
+
+        print(
+            f"[{idx + 1}/{len(rows)}] "
+            f"valid_json={is_valid_json} "
+            f"exact_match={is_exact_match} "
+            f"key_overlap={key_score:.3f} "
+            f"latency={latency:.2f}s"
+        )
 
     total = len(rows)
 
     results = {
         "mode": mode,
+        "base_model": config["model"]["base_model"],
         "num_examples": total,
-        "valid_json_rate": valid_json_count / total,
-        "exact_match_rate": exact_match_count / total,
-        "avg_key_overlap": sum(key_scores) / total,
-        "avg_latency_seconds": sum(latencies) / total,
+        "valid_json_rate": valid_json_count / total if total else 0.0,
+        "exact_match_rate": exact_match_count / total if total else 0.0,
+        "avg_key_overlap": sum(key_scores) / total if total else 0.0,
+        "avg_latency_seconds": sum(latencies) / total if total else 0.0,
+        "examples": examples,
     }
 
     return results
+
+
+def save_results(results: dict, output_path: str) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(results, file, indent=2, ensure_ascii=False)
+
+    print(f"\nSaved results to: {path}")
 
 
 def main() -> None:
@@ -202,6 +269,12 @@ def main() -> None:
         default=10,
     )
 
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+    )
+
     args = parser.parse_args()
 
     results = evaluate(
@@ -212,7 +285,10 @@ def main() -> None:
 
     print("\nEvaluation Results")
     print("=" * 80)
-    print(json.dumps(results, indent=2))
+    print(json.dumps({k: v for k, v in results.items() if k != "examples"}, indent=2))
+
+    if args.output is not None:
+        save_results(results, args.output)
 
 
 if __name__ == "__main__":
